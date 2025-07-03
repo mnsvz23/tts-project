@@ -15,20 +15,35 @@
 </head>
 <body>
   <h1>Kids Story Generator</h1>
-  <input id="prompt" type="text" placeholder="Enter a topic (e.g. a cat and a robot)" />
+  <label for="character">Choose a character:</label>
+  <select id="character">
+    <option value="Manas">Manas</option>
+    <option value="Mira">Mira</option>
+    <option value="Manik">Manik</option>
+    <option value="Tina">Tina</option>
+  </select>
+  <label for="theme">Choose a story theme:</label>
+  <select id="theme">
+    <option value="Diwali Festival">Diwali Festival</option>
+    <option value="Always help others">Always help others</option>
+    <option value="Brushing teeth is important">Brushing teeth is important</option>
+  </select>
   <button id="generate">Generate Story</button>
   <div id="story"></div>
   <audio id="audio-player" controls style="display:none;"></audio>
   <script>
-    const promptInput = document.getElementById('prompt');
+    const characterSelect = document.getElementById('character');
+    const themeSelect = document.getElementById('theme');
     const generateBtn = document.getElementById('generate');
     const storyDiv = document.getElementById('story');
     const audioPlayer = document.getElementById('audio-player');
 
     generateBtn.onclick = async () => {
-      const prompt = promptInput.value.trim();
-      if (!prompt) {
-        alert('Please enter a topic!');
+      const character = characterSelect.value;
+      const theme = themeSelect.value;
+      const prompt = character + ' ' + theme;
+      if (!character || !theme) {
+        alert('Please select both character and theme!');
         return;
       }
       generateBtn.disabled = true;

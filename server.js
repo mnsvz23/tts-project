@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const zlib = require('zlib');
+const WebSocket = require('ws');
+const { PassThrough } = require('stream');
 const app = express();
 const PORT = 3000;
 
@@ -23,10 +25,13 @@ app.post('/story', async (req, res) => {
       {
         model: 'gpt-3.5-turbo',
         messages: [
-          { role: 'system', content: 'You are a friendly assistant that writes short, simple, and fun stories for young children.' },
-          { role: 'user', content: `Write a short kids story about: ${prompt}` }
+          {
+            role: 'system',
+            content: `You are a helpful assistant that writes short stories for children.\nThe story should:\n- Be no more than 700 words.\n- Read like a kids story book.\n- Use very simple words that a child can understand.\n- Be fun, engaging, and age-appropriate.\n- Avoid scary or inappropriate content.\nRespond only with the story text.`
+          },
+          { role: 'user', content: prompt }
         ],
-        max_tokens: 300,
+        max_tokens: 1000,
         temperature: 0.8
       },
       {
@@ -53,54 +58,81 @@ app.post('/audio', async (req, res) => {
   if (!story) {
     return res.status(400).json({ error: 'Story is required' });
   }
+
+  // Only support full file requests for now
+  if (req.headers.range) {
+    return res.status(501).json({ error: 'Range requests not supported yet' });
+  }
+
   try {
-    // Use the provided custom voice
+    // Use the v3 WebSocket streaming endpoint
     const voiceId = 'qWdiyiWdNPlPyVCOLW0h';
-    const response = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-      {
+    const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input`;
+    const ws = new WebSocket(wsUrl, {
+      headers: {
+        'xi-api-key': elevenlabsKey
+      }
+    });
+
+    let audioStream = new PassThrough();
+    let audioBuffers = [];
+    let isAudioStarted = false;
+
+    ws.on('open', () => {
+      // Send initial connection message
+      ws.send(JSON.stringify({
         text: story,
-        model_id: 'eleven_monolingual_v1',
         voice_settings: {
+          speed: 1,
           stability: 0.5,
           similarity_boost: 0.5
-        }
-      },
-      {
-        headers: {
-          'xi-api-key': elevenlabsKey,
-          'Content-Type': 'application/json',
-          'Accept': 'audio/mpeg'
         },
-        responseType: 'stream',
-        decompress: false
+        model_id: 'eleven_monolingual_v1',
+        xi_api_key: elevenlabsKey
+      }));
+      // Trigger generation
+      ws.send(JSON.stringify({ text: story, try_trigger_generation: true }));
+    });
+
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.audio) {
+          // Audio is base64 encoded
+          const audioChunk = Buffer.from(msg.audio, 'base64');
+          audioBuffers.push(audioChunk);
+          if (!isAudioStarted) {
+            res.setHeader('Content-Type', 'audio/mpeg');
+            isAudioStarted = true;
+          }
+          audioStream.write(audioChunk);
+        }
+        if (msg.isFinal) {
+          audioStream.end();
+          ws.close();
+        }
+      } catch (e) {
+        // Not JSON, ignore
       }
-    );
+    });
 
-    console.log('ElevenLabs response status:', response.status);
-    console.log('ElevenLabs response headers:', response.headers);
+    ws.on('close', () => {
+      audioStream.end();
+    });
 
-    if (!response.headers['content-type'] || !response.headers['content-type'].includes('audio/mpeg')) {
-      let data = '';
-      response.data.on('data', chunk => data += chunk);
-      response.data.on('end', () => {
-        console.error('ElevenLabs returned non-audio:', data);
-        res.status(500).json({ error: 'ElevenLabs did not return audio', details: data });
-      });
-      return;
-    }
+    ws.on('error', (err) => {
+      console.error('ElevenLabs WebSocket error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to generate audio (WebSocket error)' });
+      }
+      audioStream.end();
+    });
 
-    res.setHeader('Content-Type', 'audio/mpeg');
-    if (response.headers['content-encoding'] === 'gzip') {
-      const gunzip = zlib.createGunzip();
-      response.data.pipe(gunzip).pipe(res);
-      gunzip.on('end', () => res.end());
-    } else {
-      response.data.pipe(res);
-      response.data.on('end', () => res.end());
-    }
+    // Pipe the audio stream to the response
+    audioStream.pipe(res);
+    audioStream.on('end', () => res.end());
   } catch (error) {
-    console.error('ElevenLabs error:', error.response?.data || error.message);
+    console.error('ElevenLabs error:', error);
     res.status(500).json({ error: 'Failed to generate audio' });
   }
 });
